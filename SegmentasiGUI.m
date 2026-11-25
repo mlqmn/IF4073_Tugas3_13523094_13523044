@@ -1,6 +1,7 @@
 function fig = SegmentasiGUI
 folder = fileparts(mfilename('fullpath'));
 img = [];
+imagePath = '';
 
 fig = uifigure('Name', 'Segmentasi Citra', 'Position', [100 100 1200 650]);
 layout = uigridlayout(fig, [3 1]);
@@ -39,9 +40,33 @@ minSize = uieditfield(controls, 'numeric', 'Value', 8, ...
     'Limits', [1 Inf], 'RoundFractionalValues', 'on');
 mergeThreshold = uieditfield(controls, 'numeric', 'Value', 22, 'Limits', [0 442]);
 
+[classNames, classColors] = CamVidClasses;
+[controls, semanticAxes, semanticTab] = makeTab(tabs, 'D. Segmentasi Semantik', ...
+    {'Citra masukan','Segmentasi semantik','Overlay','Ground truth'}, ...
+    numel(classNames) + 1, @(~,~) process(3));
+opacityLabel = uilabel(controls, 'Text', 'Opacity overlay');
+opacityLabel.Layout.Row = 1;
+opacityLabel.Layout.Column = 1;
+legendLabel = uilabel(controls, 'Text', 'Kelas CamVid');
+legendLabel.Layout.Row = 1;
+legendLabel.Layout.Column = [2 numel(classNames) + 1];
+overlayOpacity = uieditfield(controls, 'numeric', 'Value', 0.5, 'Limits', [0 1]);
+overlayOpacity.Layout.Row = 2;
+overlayOpacity.Layout.Column = 1;
+for k = 1:numel(classNames)
+    swatch = uilabel(controls, 'Text', classNames{k}, 'HorizontalAlignment', 'center', ...
+        'BackgroundColor', classColors(k,:) / 255, 'FontColor', readableTextColor(classColors(k,:)));
+    swatch.Layout.Row = 2;
+    swatch.Layout.Column = k + 1;
+end
+
     function openImage(~, ~)
+        startFolder = fullfile(folder, 'bsds500_test_8', '*.jpg');
+        if tabs.SelectedTab == semanticTab
+            startFolder = fullfile(folder, 'data', 'camvid', 'test', 'images', '*.png');
+        end
         [file, path] = uigetfile({'*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff', 'Citra'}, ...
-            'Buka citra', fullfile(folder, 'bsds500_test_8', '*.jpg'));
+            'Buka citra', startFolder);
         if isequal(file, 0), return, end
         try
             [newImage, map] = imread(fullfile(path, file));
@@ -49,13 +74,15 @@ mergeThreshold = uieditfield(controls, 'numeric', 'Value', 22, 'Limits', [0 442]
                 error('Gunakan citra uint8 grayscale atau RGB, bukan citra indexed.');
             end
             img = newImage;
+            imagePath = fullfile(path, file);
             fileLabel.Text = file;
-            for ax = [edgeAxes, splitAxes]
+            for ax = [edgeAxes, splitAxes, semanticAxes]
                 cla(ax);
             end
             for ax = [edgeAxes(1), splitAxes(1)]
                 showImage(ax, img, 'Citra asli');
             end
+            showImage(semanticAxes(1), img, 'Citra masukan');
             status.Text = 'Citra dimuat. Pilih tab dan klik Proses.';
         catch err
             uialert(fig, err.message, 'Gagal membuka citra');
@@ -70,6 +97,7 @@ mergeThreshold = uieditfield(controls, 'numeric', 'Value', 22, 'Limits', [0 442]
         status.Text = 'Memproses citra...';
         drawnow;
         started = tic;
+        detail = '';
         try
             switch method
                 case 1
@@ -81,16 +109,55 @@ mergeThreshold = uieditfield(controls, 'numeric', 'Value', 22, 'Limits', [0 442]
                     [labels, result] = SplitAndMerge(img, splitThreshold.Value, ...
                         minSize.Value, mergeThreshold.Value);
                     showImage(splitAxes(2), result, sprintf('Hasil (%d region)', max(labels(:))));
+                case 3
+                    labels = SemanticSegment(imagePath);
+                    colored = colorizeLabels(labels, classColors);
+                    opacity = overlayOpacity.Value;
+                    overlay = uint8((1 - opacity) * double(img) + opacity * double(colored));
+                    showImage(semanticAxes(2), colored, 'Segmentasi semantik');
+                    showImage(semanticAxes(3), overlay, 'Overlay');
+                    detail = showGroundTruth(labels);
             end
-            status.Text = sprintf('Selesai dalam %.2f detik.', toc(started));
+            status.Text = sprintf('Selesai dalam %.2f detik.%s', toc(started), detail);
         catch err
             status.Text = 'Proses gagal.';
             uialert(fig, err.message, 'Gagal memproses citra');
         end
     end
+
+    function detail = showGroundTruth(labels)
+        [imageFolder, name] = fileparts(imagePath);
+        truthPath = fullfile(imageFolder, '..', 'labels', [name '.png']);
+        if ~isfile(truthPath)
+            cla(semanticAxes(4));
+            title(semanticAxes(4), 'Ground truth tidak tersedia');
+            detail = '';
+            return
+        end
+        truth = imread(truthPath);
+        showImage(semanticAxes(4), colorizeLabels(truth, classColors), 'Ground truth');
+        labeled = truth ~= 255;
+        detail = sprintf(' Akurasi piksel terhadap ground truth: %.1f%%.', ...
+            100 * mean(labels(labeled) == truth(labeled)));
+    end
 end
 
-function [controls, axesList] = makeTab(tabs, name, titles, columns, callback)
+function rgb = colorizeLabels(labels, classColors)
+palette = [classColors; 0 0 0];
+index = double(labels) + 1;
+index(labels == 255) = size(palette, 1);
+rgb = uint8(reshape(palette(index, :), [size(labels) 3]));
+end
+
+function color = readableTextColor(background)
+if [0.299 0.587 0.114] * background(:) > 140
+    color = [0 0 0];
+else
+    color = [1 1 1];
+end
+end
+
+function [controls, axesList, tab] = makeTab(tabs, name, titles, columns, callback)
 tab = uitab(tabs, 'Title', name);
 layout = uigridlayout(tab, [3 1]);
 layout.RowHeight = {70, 30, '1x'};
